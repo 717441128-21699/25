@@ -85,8 +85,6 @@ async def lifespan(app: FastAPI):
 
     scheduler.shutdown()
     logger.info("定时任务调度器已停止")
-    from utils.cache import redis_manager
-    await redis_manager.close_async()
     logger.info(f"{settings.app_name} 服务已停止")
 
 

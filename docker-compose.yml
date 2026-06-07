@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: equity_postgres
+    environment:
+      POSTGRES_DB: equity_management
+      POSTGRES_USER: equity_user
+      POSTGRES_PASSWORD: equity_password_123
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U equity_user -d equity_management"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: equity_redis
+    command: redis-server --requirepass redis_password_123 --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_password_123", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: equity_api
+    environment:
+      DATABASE_URL: postgresql+psycopg2://equity_user:equity_password_123@postgres:5432/equity_management
+      REDIS_URL: redis://:redis_password_123@redis:6379/0
+      REDIS_PASSWORD: redis_password_123
+      CELERY_BROKER_URL: redis://:redis_password_123@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:redis_password_123@redis:6379/2
+      SECRET_KEY: docker-secret-key-change-in-production-abc123xyz
+      APP_ENV: docker
+      DEBUG: "true"
+      TZ: Asia/Shanghai
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - api_reports:/app/reports
+      - api_logs:/app/logs
+      - api_archive:/app/archive
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: equity_celery_worker
+    environment:
+      DATABASE_URL: postgresql+psycopg2://equity_user:equity_password_123@postgres:5432/equity_management
+      REDIS_URL: redis://:redis_password_123@redis:6379/0
+      REDIS_PASSWORD: redis_password_123
+      CELERY_BROKER_URL: redis://:redis_password_123@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:redis_password_123@redis:6379/2
+      SECRET_KEY: docker-secret-key-change-in-production-abc123xyz
+      TZ: Asia/Shanghai
+    command: celery -A tasks.celery_tasks worker --loglevel=info -P solo --concurrency=2
+    volumes:
+      - .:/app
+      - api_reports:/app/reports
+      - api_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: equity_celery_beat
+    environment:
+      DATABASE_URL: postgresql+psycopg2://equity_user:equity_password_123@postgres:5432/equity_management
+      REDIS_URL: redis://:redis_password_123@redis:6379/0
+      REDIS_PASSWORD: redis_password_123
+      CELERY_BROKER_URL: redis://:redis_password_123@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:redis_password_123@redis:6379/2
+      SECRET_KEY: docker-secret-key-change-in-production-abc123xyz
+      TZ: Asia/Shanghai
+    command: celery -A tasks.celery_tasks beat --loglevel=info
+    volumes:
+      - .:/app
+      - api_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  api_reports:
+  api_logs:
+  api_archive:

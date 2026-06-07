@@ -54,6 +54,7 @@ def validate_exercise(request: ExerciseRequestCreate, db: Session = Depends(get_
 
 
 @router.post("", response_model=APIResponse)
+@router.post("/apply", response_model=APIResponse)
 def create_exercise_request(request: ExerciseRequestCreate, db: Session = Depends(get_db)):
     try:
         exercise = ExerciseService.create_exercise_request(

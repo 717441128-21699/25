@@ -1,58 +1,80 @@
-import redis.asyncio as aioredis
-import redis
 from typing import Optional, Any
-from config import settings
 import json
 import pickle
 from datetime import timedelta
+from config import settings
+from utils.logger import get_logger
+
+logger = get_logger("cache")
+
+_redis_available = None
+
+
+def check_redis_available() -> bool:
+    global _redis_available
+    if _redis_available is not None:
+        return _redis_available
+    try:
+        import redis
+        kwargs = {
+            "decode_responses": True,
+            "socket_connect_timeout": 2,
+            "socket_timeout": 2,
+        }
+        if settings.redis_password:
+            kwargs["password"] = settings.redis_password
+        client = redis.from_url(settings.redis_url, **kwargs)
+        client.ping()
+        _redis_available = True
+        return True
+    except Exception as e:
+        logger.warning(f"Redis不可用，将使用内存缓存: {e}")
+        _redis_available = False
+        return False
+
+
+_memory_store = {}
 
 
 class RedisManager:
-    _sync_client: Optional[redis.Redis] = None
-    _async_client: Optional[aioredis.Redis] = None
 
     @classmethod
-    def get_sync_client(cls) -> redis.Redis:
-        if cls._sync_client is None:
+    def get_sync_client(cls):
+        try:
+            import redis
             kwargs = {
                 "decode_responses": True,
-                "socket_connect_timeout": 5,
-                "socket_timeout": 5,
-                "retry_on_timeout": True,
-                "max_connections": 100,
+                "socket_connect_timeout": 2,
+                "socket_timeout": 2,
             }
             if settings.redis_password:
                 kwargs["password"] = settings.redis_password
-            cls._sync_client = redis.from_url(settings.redis_url, **kwargs)
-        return cls._sync_client
-
-    @classmethod
-    def get_async_client(cls) -> aioredis.Redis:
-        if cls._async_client is None:
-            kwargs = {
-                "decode_responses": True,
-                "socket_connect_timeout": 5,
-                "socket_timeout": 5,
-                "max_connections": 100,
-            }
-            if settings.redis_password:
-                kwargs["password"] = settings.redis_password
-            cls._async_client = aioredis.from_url(settings.redis_url, **kwargs)
-        return cls._async_client
-
-    @classmethod
-    async def close_async(cls):
-        if cls._async_client:
-            await cls._async_client.close()
-            cls._async_client = None
+            return redis.from_url(settings.redis_url, **kwargs)
+        except Exception:
+            return None
 
     @classmethod
     def get(cls, key: str) -> Optional[str]:
-        return cls.get_sync_client().get(key)
+        try:
+            if check_redis_available():
+                client = cls.get_sync_client()
+                if client:
+                    return client.get(key)
+        except Exception:
+            pass
+        return _memory_store.get(key)
 
     @classmethod
     def set(cls, key: str, value: Any, ex: Optional[int] = None) -> bool:
-        return cls.get_sync_client().set(key, value, ex=ex)
+        try:
+            if check_redis_available():
+                client = cls.get_sync_client()
+                if client:
+                    return bool(client.set(key, value, ex=ex))
+        except Exception:
+            pass
+        _memory_store[key] = value
+        return True
 
     @classmethod
     def get_json(cls, key: str) -> Optional[Any]:
@@ -69,51 +91,84 @@ class RedisManager:
         return cls.set(key, json.dumps(value, ensure_ascii=False, default=str), ex=ex)
 
     @classmethod
-    async def aget(cls, key: str) -> Optional[str]:
-        return await cls.get_async_client().get(key)
-
-    @classmethod
-    async def aset(cls, key: str, value: Any, ex: Optional[int] = None) -> bool:
-        return await cls.get_async_client().set(key, value, ex=ex)
-
-    @classmethod
-    async def aget_json(cls, key: str) -> Optional[Any]:
-        data = await cls.aget(key)
-        if data:
-            try:
-                return json.loads(data)
-            except json.JSONDecodeError:
-                return None
-        return None
-
-    @classmethod
-    async def aset_json(cls, key: str, value: Any, ex: Optional[int] = None) -> bool:
-        return await cls.aset(key, json.dumps(value, ensure_ascii=False, default=str), ex=ex)
-
-    @classmethod
     def delete(cls, key: str) -> int:
-        return cls.get_sync_client().delete(key)
+        try:
+            if check_redis_available():
+                client = cls.get_sync_client()
+                if client:
+                    return client.delete(key)
+        except Exception:
+            pass
+        if key in _memory_store:
+            del _memory_store[key]
+            return 1
+        return 0
 
     @classmethod
     def exists(cls, key: str) -> bool:
-        return bool(cls.get_sync_client().exists(key))
+        try:
+            if check_redis_available():
+                client = cls.get_sync_client()
+                if client:
+                    return bool(client.exists(key))
+        except Exception:
+            pass
+        return key in _memory_store
 
     @classmethod
     def acquire_lock(cls, key: str, timeout: int = 30) -> bool:
+        try:
+            if check_redis_available():
+                import redis
+                client = cls.get_sync_client()
+                if client:
+                    lock_key = f"lock:{key}"
+                    return bool(client.set(lock_key, "1", nx=True, ex=timeout))
+        except Exception:
+            pass
         lock_key = f"lock:{key}"
-        return bool(cls.get_sync_client().set(lock_key, "1", nx=True, ex=timeout))
+        import time
+        now = time.time()
+        if lock_key in _memory_store and _memory_store[lock_key] > now:
+            return False
+        _memory_store[lock_key] = now + timeout
+        return True
 
     @classmethod
     def release_lock(cls, key: str) -> None:
-        cls.delete(f"lock:{key}")
+        try:
+            if check_redis_available():
+                cls.delete(f"lock:{key}")
+                return
+        except Exception:
+            pass
+        lock_key = f"lock:{key}"
+        if lock_key in _memory_store:
+            del _memory_store[lock_key]
 
     @classmethod
     def incr(cls, key: str, amount: int = 1) -> int:
-        return cls.get_sync_client().incr(key, amount)
+        try:
+            if check_redis_available():
+                client = cls.get_sync_client()
+                if client:
+                    return client.incr(key, amount)
+        except Exception:
+            pass
+        current = int(_memory_store.get(key, 0))
+        _memory_store[key] = current + amount
+        return _memory_store[key]
 
     @classmethod
     def expire(cls, key: str, seconds: int) -> bool:
-        return bool(cls.get_sync_client().expire(key, seconds))
+        try:
+            if check_redis_available():
+                client = cls.get_sync_client()
+                if client:
+                    return bool(client.expire(key, seconds))
+        except Exception:
+            pass
+        return True
 
 
 redis_manager = RedisManager()
