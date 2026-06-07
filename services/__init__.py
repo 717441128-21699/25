@@ -1,3 +1,5 @@
+from typing import Any, Optional, List
+from sqlalchemy.orm import Session
 from .hr_sync import EmployeeSyncService, hr_client
 from .equity_engine import (
     EquityPlanService,
@@ -260,8 +262,8 @@ class _RepurchaseCalc(RepurchaseCalculator):
         approvals = RepurchaseApprovalEngine.determine_approval_levels(total_amount)
         from database.models import ApprovalLevel
 
-        board_req = ApprovalLevel.BOARD in approvals or ApprovalLevel.BOARD_OF_DIRECTORS in approvals
-        shareholder_req = ApprovalLevel.SHAREHOLDER in approvals or ApprovalLevel.GENERAL_MEETING in approvals
+        board_req = ApprovalLevel.BOARD in approvals
+        shareholder_req = ApprovalLevel.SHAREHOLDER in approvals
         level = approvals[-1].value if approvals else "manager"
 
         return {

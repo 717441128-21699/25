@@ -153,7 +153,7 @@ def simulate_holding_change(
     db: Session = Depends(get_db),
 ):
     from decimal import Decimal
-    from services.executive_alert import ExecutiveMonitor
+    from services import ExecutiveMonitor
     employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
     if not employee:
         raise HTTPException(status_code=404, detail=f"高管不存在: {employee_id}")

@@ -191,7 +191,7 @@ class ExerciseService:
                     "brackets": [[str(b[0]), float(b[1]), float(b[2])] for b in tax_result.get("brackets", [])],
                     "quick_deduction": float(tax_result.get("quick_deduction", 0)),
                 },
-                metadata={
+                extra_metadata={
                     "warnings": validation["warnings"],
                 },
             )

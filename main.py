@@ -1,8 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
+from decimal import Decimal
+from datetime import date, datetime
+import json
 
 from config import settings
 from database import init_db
@@ -10,6 +14,39 @@ from utils.logger import setup_logging, get_logger
 from api import api_router
 
 logger = get_logger("main")
+
+
+def _json_default(obj):
+    if isinstance(obj, Decimal):
+        return str(obj)
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, bytes):
+        try:
+            return obj.decode("utf-8")
+        except Exception:
+            return list(obj)
+    if isinstance(obj, set):
+        return list(obj)
+    if hasattr(obj, "value"):
+        try:
+            return obj.value
+        except Exception:
+            pass
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+class CustomJSONResponse(JSONResponse):
+    def render(self, content) -> bytes:
+        return json.dumps(
+            jsonable_encoder(content, custom_encoder={
+                Decimal: lambda v: str(v),
+                datetime: lambda v: v.isoformat(),
+                date: lambda v: v.isoformat(),
+            }),
+            ensure_ascii=False,
+            default=_json_default,
+        ).encode("utf-8")
 
 
 @asynccontextmanager
@@ -23,16 +60,67 @@ async def lifespan(app: FastAPI):
 
     try:
         from apscheduler.triggers.cron import CronTrigger
-        from tasks import (
-            hr_sync_task,
-            process_vesting_task,
-            generate_monthly_report_task,
-            executive_monitoring_task,
-            shareholder_update_task,
+        from database import SessionLocal
+        from services import (
+            EmployeeSyncService,
+            GrantService,
+            MonthlyReportService,
+            ExecutiveMonitoringService,
+            ShareholderService,
         )
 
+        def _run_hr_sync():
+            db = SessionLocal()
+            try:
+                result = EmployeeSyncService.sync_all_employees(db)
+                logger.info(f"[定时任务] HR系统同步完成: {result}")
+            except Exception as e:
+                logger.error(f"[定时任务] HR系统同步失败: {e}", exc_info=True)
+            finally:
+                db.close()
+
+        def _run_vesting():
+            db = SessionLocal()
+            try:
+                result = GrantService.process_vesting(db)
+                logger.info(f"[定时任务] 每日归属处理完成: {result}")
+            except Exception as e:
+                logger.error(f"[定时任务] 每日归属处理失败: {e}", exc_info=True)
+            finally:
+                db.close()
+
+        def _run_monthly_report():
+            db = SessionLocal()
+            try:
+                report = MonthlyReportService.generate_monthly_report(db)
+                logger.info(f"[定时任务] 月度报告生成完成: {report.report_month}")
+            except Exception as e:
+                logger.error(f"[定时任务] 月度报告生成失败: {e}", exc_info=True)
+            finally:
+                db.close()
+
+        def _run_exec_monitor():
+            db = SessionLocal()
+            try:
+                alerts = ExecutiveMonitoringService.monitor_all_executives(db)
+                logger.info(f"[定时任务] 高管持仓监控完成: 发现 {len(alerts)} 项预警")
+            except Exception as e:
+                logger.error(f"[定时任务] 高管持仓监控失败: {e}", exc_info=True)
+            finally:
+                db.close()
+
+        def _run_shareholder():
+            db = SessionLocal()
+            try:
+                result = ShareholderService.bulk_update_all(db)
+                logger.info(f"[定时任务] 股东名册更新完成: {result}")
+            except Exception as e:
+                logger.error(f"[定时任务] 股东名册更新失败: {e}", exc_info=True)
+            finally:
+                db.close()
+
         scheduler.add_job(
-            lambda: hr_sync_task.delay(),
+            _run_hr_sync,
             CronTrigger(minute=0),
             id="hr_sync",
             name="HR系统同步",
@@ -41,7 +129,7 @@ async def lifespan(app: FastAPI):
         logger.info("已注册定时任务: HR系统同步 (每小时)")
 
         scheduler.add_job(
-            lambda: process_vesting_task.delay(),
+            _run_vesting,
             CronTrigger(hour=2, minute=0),
             id="process_vesting",
             name="每日归属处理",
@@ -50,7 +138,7 @@ async def lifespan(app: FastAPI):
         logger.info("已注册定时任务: 每日归属处理 (凌晨2点)")
 
         scheduler.add_job(
-            lambda: generate_monthly_report_task.delay(),
+            _run_monthly_report,
             CronTrigger(day=1, hour=3, minute=0),
             id="monthly_report",
             name="月度报告生成",
@@ -59,7 +147,7 @@ async def lifespan(app: FastAPI):
         logger.info("已注册定时任务: 月度报告生成 (每月1号凌晨3点)")
 
         scheduler.add_job(
-            lambda: executive_monitoring_task.delay(),
+            _run_exec_monitor,
             CronTrigger(hour=9, minute=0),
             id="executive_monitoring",
             name="高管持仓监控",
@@ -68,7 +156,7 @@ async def lifespan(app: FastAPI):
         logger.info("已注册定时任务: 高管持仓监控 (每天上午9点)")
 
         scheduler.add_job(
-            lambda: shareholder_update_task.delay(),
+            _run_shareholder,
             CronTrigger(hour=1, minute=0),
             id="shareholder_update",
             name="股东名册更新",
@@ -95,6 +183,7 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
+    default_response_class=CustomJSONResponse,
 )
 
 app.add_middleware(

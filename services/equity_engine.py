@@ -312,7 +312,7 @@ class GrantService:
                 performance_conditions=performance_conditions or plan.performance_metrics,
                 shares_outstanding=total_shares,
                 status=VestingStatus.PENDING,
-                metadata={
+                extra_metadata={
                     "calculation": calc_result,
                 },
             )

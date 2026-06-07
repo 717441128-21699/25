@@ -1,14 +1,31 @@
 from typing import List, Dict, Any, Optional
 from datetime import date, datetime
 from sqlalchemy.orm import Session
-import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from config import settings
 from database.models import Employee, EmployeeLevel
 from utils.common import parse_date, safe_decimal
 from utils.logger import get_logger
 from utils.operation_log import OperationLogger
 from database.models import LogAction
+
+try:
+    import httpx
+    HAS_HTTPX = True
+except ImportError:
+    HAS_HTTPX = False
+
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+    HAS_TENACITY = True
+except ImportError:
+    HAS_TENACITY = False
+    def retry(*args, **kwargs):
+        def decorator(fn):
+            return fn
+        return decorator
+    stop_after_attempt = lambda *a, **k: None
+    wait_exponential = lambda *a, **k: None
+    retry_if_exception_type = lambda *a, **k: None
 
 logger = get_logger("hr_sync")
 

@@ -41,7 +41,7 @@ class OperationLogger:
             new_value=new_value,
             changed_fields=changed_fields,
             description=description,
-            metadata=metadata,
+            extra_metadata=metadata,
         )
         db.add(log)
         db.flush()

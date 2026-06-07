@@ -9,11 +9,25 @@
 
 import sys
 import os
+import io
+
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+
+os.environ.setdefault("DEBUG", "false")
+
 import json
 import time
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
+
+import logging
+logging.basicConfig(level=logging.WARNING)
+for _l in ["sqlalchemy.engine", "equity_management"]:
+    logging.getLogger(_l).setLevel(logging.WARNING)
 
 
 class Colors:
@@ -169,15 +183,12 @@ def main():
             "plan_code": "TEST_PLAN_" + datetime.now().strftime("%H%M%S"),
             "plan_name": "测试股票期权计划",
             "equity_type": "OPTION",
-            "total_shares": 100000,
-            "grant_date": date.today().isoformat(),
+            "total_shares_reserved": 100000,
             "cliff_months": 12,
-            "vesting_months": 48,
-            "vesting_interval": "MONTHLY",
-            "exercise_price": Decimal("20.00"),
-            "valid_from": date.today().isoformat(),
-            "valid_to": date(date.today().year + 10, 12, 31).isoformat(),
-            "description": "API测试创建的计划",
+            "vesting_period_months": 48,
+            "vesting_interval_months": 1,
+            "effective_date": date.today().isoformat(),
+            "expiration_date": date(date.today().year + 10, 12, 31).isoformat(),
         }
         resp = client.post("/api/v1/equity/plans", json=plan_payload)
         assert resp.status_code == 200, f"HTTP {resp.status_code}: {resp.text[:200]}"
@@ -225,7 +236,7 @@ def main():
             "plan_code": plan_code,
             "grant_date": date.today().isoformat(),
             "custom_shares": 5000,
-            "custom_price": Decimal("18.50"),
+            "custom_price": float(Decimal("18.50")),
         }
         resp2 = client.post("/api/v1/equity/grants", json=grant_payload)
         assert resp2.status_code == 200, f"HTTP {resp2.status_code}: {resp2.text[:200]}"

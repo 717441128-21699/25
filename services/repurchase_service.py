@@ -169,7 +169,7 @@ class RepurchaseService:
             reason=reason,
             repurchase_reason_type=reason_type,
             status=RepurchaseStatus.DRAFT,
-            metadata={
+            extra_metadata={
                 "repurchase_details": [
                     {
                         "grant_id": d["grant_id"],
@@ -396,7 +396,7 @@ class RepurchaseService:
         if request.status != RepurchaseStatus.APPROVED:
             raise ValueError(f"申请状态不允许完成: {request.status.value}")
 
-        details = request.metadata.get("repurchase_details", []) if request.metadata else []
+        details = request.extra_metadata.get("repurchase_details", []) if request.extra_metadata else []
 
         for detail in details:
             grant = (

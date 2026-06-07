@@ -3,10 +3,10 @@ from datetime import datetime, date
 from decimal import Decimal
 from sqlalchemy import (
     Column, Integer, String, DateTime, Date, Numeric, Boolean,
-    ForeignKey, Text, Enum, JSON, Float, BigInteger, UniqueConstraint, Index
+    ForeignKey, Text, Enum, Float, BigInteger, UniqueConstraint, Index
 )
 from sqlalchemy.orm import relationship
-from database.connection import Base
+from database.connection import Base, JSON
 
 
 class EquityType(str, enum.Enum):
@@ -101,7 +101,7 @@ class LogAction(str, enum.Enum):
 class TimeStampedModel(Base):
     __abstract__ = True
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     created_by = Column(String(100), nullable=True)
@@ -206,7 +206,7 @@ class EquityGrant(TimeStampedModel):
     is_accepted = Column(Boolean, default=False)
 
     notes = Column(Text, nullable=True)
-    metadata = Column(JSON, nullable=True)
+    extra_metadata = Column(JSON, nullable=True)
 
     employee = relationship("Employee", back_populates="grants")
     plan = relationship("EquityPlan", back_populates="grants")
@@ -267,7 +267,7 @@ class ExerciseRequest(TimeStampedModel):
     approved_at = Column(DateTime, nullable=True)
 
     tax_details = Column(JSON, nullable=True)
-    metadata = Column(JSON, nullable=True)
+    extra_metadata = Column(JSON, nullable=True)
 
     employee = relationship("Employee", back_populates="exercises")
     grant = relationship("EquityGrant", back_populates="exercises")
@@ -299,7 +299,7 @@ class RepurchaseRequest(TimeStampedModel):
     approval_level = Column(Enum(ApprovalLevel), nullable=True)
 
     approvals = relationship("ApprovalRecord", back_populates="repurchase_request")
-    metadata = Column(JSON, nullable=True)
+    extra_metadata = Column(JSON, nullable=True)
 
 
 class ApprovalRecord(TimeStampedModel):
@@ -411,7 +411,7 @@ class ExecutiveAlert(TimeStampedModel):
     acknowledgement_remarks = Column(Text, nullable=True)
 
     notes = Column(Text, nullable=True)
-    metadata = Column(JSON, nullable=True)
+    extra_metadata = Column(JSON, nullable=True)
 
 
 class MonthlyReport(TimeStampedModel):
@@ -471,7 +471,7 @@ class OperationLog(TimeStampedModel):
     changed_fields = Column(JSON, nullable=True)
 
     description = Column(Text, nullable=True)
-    metadata = Column(JSON, nullable=True)
+    extra_metadata = Column(JSON, nullable=True)
 
     __table_args__ = (
         Index("ix_logs_employee_time", "employee_id", "created_at"),
