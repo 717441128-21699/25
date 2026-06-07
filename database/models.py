@@ -277,15 +277,18 @@ class RepurchaseRequest(TimeStampedModel):
     __tablename__ = "repurchase_requests"
 
     request_id = Column(String(50), unique=True, nullable=False, index=True)
-    initiated_by = Column(String(100), nullable=False)
+    initiated_by = Column(String(100), nullable=False, default="system")
 
     employee_id = Column(String(50), ForeignKey("employees.employee_id"), nullable=False, index=True)
-    grant_ids = Column(JSON, nullable=False)
+    grant_id = Column(BigInteger, ForeignKey("equity_grants.id"), nullable=True, index=True)
+    grant_ids = Column(JSON, nullable=True)
 
     repurchase_date = Column(Date, nullable=True)
-    total_shares = Column(BigInteger, nullable=False)
-    repurchase_price_per_share = Column(Numeric(18, 4), nullable=False)
-    total_repurchase_amount = Column(Numeric(18, 2), nullable=False)
+    total_shares = Column(BigInteger, nullable=False, default=0)
+    shares_to_repurchase = Column(BigInteger, nullable=False, default=0)
+    repurchase_price_per_share = Column(Numeric(18, 4), nullable=False, default=0)
+    total_repurchase_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    repurchase_amount = Column(Numeric(18, 2), nullable=True)
     currency = Column(String(10), default="CNY", nullable=False)
 
     reason = Column(Text, nullable=True)
@@ -293,6 +296,7 @@ class RepurchaseRequest(TimeStampedModel):
 
     status = Column(Enum(RepurchaseStatus), default=RepurchaseStatus.DRAFT, index=True)
     current_approval_level = Column(Enum(ApprovalLevel), nullable=True)
+    approval_level = Column(Enum(ApprovalLevel), nullable=True)
 
     approvals = relationship("ApprovalRecord", back_populates="repurchase_request")
     metadata = Column(JSON, nullable=True)
@@ -400,6 +404,12 @@ class ExecutiveAlert(TimeStampedModel):
     approved_by = Column(String(100), nullable=True)
     approved_at = Column(DateTime, nullable=True)
 
+    is_active = Column(Boolean, default=True, index=True)
+    acknowledged_by = Column(String(100), nullable=True)
+    acknowledged_by_name = Column(String(200), nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+    acknowledgement_remarks = Column(Text, nullable=True)
+
     notes = Column(Text, nullable=True)
     metadata = Column(JSON, nullable=True)
 
@@ -409,6 +419,8 @@ class MonthlyReport(TimeStampedModel):
 
     report_id = Column(String(50), unique=True, nullable=False, index=True)
     report_month = Column(String(7), nullable=False, index=True)
+    year = Column(Integer, nullable=True, index=True)
+    month = Column(Integer, nullable=True, index=True)
 
     total_grants_count = Column(Integer, default=0)
     total_grants_shares = Column(BigInteger, default=0)

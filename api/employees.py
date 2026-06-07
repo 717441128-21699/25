@@ -1,13 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import Optional, List
-from datetime import datetime
+from sqlalchemy import func
+from typing import Optional
 
 from database import get_db
-from database.models import EmployeeLevel
+from database.models import EmployeeLevel, Employee
 from services import EmployeeSyncService
 from schemas import (
-    EmployeeSchema, EmployeeListResponse, APIResponse, PaginatedResponse, HRSyncResponse,
+    EmployeeSchema, APIResponse, PaginatedResponse,
 )
 from utils.logger import get_logger
 
@@ -25,16 +25,19 @@ def list_employees(
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
-    employees = EmployeeSyncService.list_employees(
-        db=db,
-        department=department,
-        level=level,
-        is_active=is_active,
-        is_executive=is_executive,
-        skip=skip,
-        limit=limit,
-    )
-    total = len(employees) if skip == 0 and limit >= len(employees) else len(employees) + skip
+    query = db.query(Employee)
+    if department:
+        query = query.filter(Employee.department == department)
+    if level:
+        query = query.filter(Employee.level == level)
+    if is_active is not None:
+        query = query.filter(Employee.is_active == is_active)
+    if is_executive is not None:
+        query = query.filter(Employee.is_executive == is_executive)
+
+    total = query.count()
+    employees = query.order_by(Employee.employee_id).offset(skip).limit(limit).all()
+
     return PaginatedResponse(
         data=[EmployeeSchema.model_validate(e).model_dump() for e in employees],
         total=total,
@@ -47,7 +50,7 @@ def list_employees(
 def get_employee(employee_id: str, db: Session = Depends(get_db)):
     employee = EmployeeSyncService.get_employee(db, employee_id)
     if not employee:
-        raise HTTPException(status_code=404, detail="员工不存在")
+        raise HTTPException(status_code=404, detail=f"员工不存在: {employee_id}")
     return APIResponse(data=EmployeeSchema.model_validate(employee).model_dump())
 
 
@@ -55,7 +58,12 @@ def get_employee(employee_id: str, db: Session = Depends(get_db)):
 async def sync_employees(db: Session = Depends(get_db)):
     try:
         result = await EmployeeSyncService.sync_all_employees(db)
-        return APIResponse(data=result, message="HR同步完成")
+        if not result:
+            result = {"status": "failed"}
+        return APIResponse(
+            data=result,
+            message=f"HR同步完成: 新增{result.get('created', 0)}人, 更新{result.get('updated', 0)}人, 共{result.get('total', 0)}人"
+        )
     except Exception as e:
         logger.error(f"HR同步失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"同步失败: {str(e)}")

@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import date, datetime
 from decimal import Decimal
 from pydantic import BaseModel, Field, ConfigDict
@@ -163,17 +163,30 @@ class RepurchaseRequestCreate(BaseSchema):
     reason: str
 
 
+class RepurchaseCreate(BaseSchema):
+    employee_id: str
+    grant_id: str
+    shares_to_repurchase: int
+    reason: Any = "VOLUNTARY"
+    custom_price: Optional[Decimal] = None
+
+
 class RepurchaseRequestSchema(BaseSchema):
     id: Optional[int] = None
     request_id: str
     employee_id: str
-    total_shares: int
-    repurchase_price_per_share: Decimal
-    total_repurchase_amount: Decimal
+    grant_id: Optional[int] = None
+    shares_to_repurchase: int = 0
+    repurchase_price_per_share: Optional[Decimal] = None
+    repurchase_amount: Optional[Decimal] = None
     reason: Optional[str] = None
     repurchase_reason_type: Optional[str] = None
     status: RepurchaseStatus = RepurchaseStatus.DRAFT
-    current_approval_level: Optional[ApprovalLevel] = None
+    current_approval_level: Optional[Any] = None
+    approval_level: Optional[Any] = None
+    created_at: Optional[datetime] = None
+    total_shares: int = 0
+    total_repurchase_amount: Optional[Decimal] = None
 
 
 class RepurchaseApprovalRequest(BaseSchema):
@@ -215,8 +228,10 @@ class ExecutiveAlertSchema(BaseSchema):
 
 class MonthlyReportSchema(BaseSchema):
     id: Optional[int] = None
-    report_id: str
-    report_month: str
+    report_id: Optional[str] = None
+    report_month: Optional[str] = None
+    year: Optional[int] = None
+    month: Optional[int] = None
     total_grants_count: int = 0
     total_grants_shares: int = 0
     total_exercises_count: int = 0
@@ -230,10 +245,12 @@ class MonthlyReportSchema(BaseSchema):
     yoy_grants_growth: Optional[Decimal] = None
     yoy_exercises_growth: Optional[Decimal] = None
     yoy_repurchases_growth: Optional[Decimal] = None
+    summary_data: Optional[Any] = None
     pdf_path: Optional[str] = None
     excel_path: Optional[str] = None
     is_generated: bool = False
     generated_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
 
 
 class OperationLogQuery(BaseSchema):

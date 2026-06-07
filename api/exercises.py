@@ -1,15 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 
 from database import get_db
+from database.models import Employee, EquityGrant, ExerciseRequest
 from services import (
     ExerciseService, ExerciseValidator, TaxCalculator, GrantService,
 )
-from database.models import Employee, EquityGrant
 from schemas import (
     ExerciseRequestCreate, ExerciseRequestSchema,
-    ExerciseValidationResponse, APIResponse, PaginatedResponse,
+    APIResponse, PaginatedResponse,
 )
 from utils.logger import get_logger
 
@@ -21,35 +21,46 @@ logger = get_logger("api_exercise")
 def validate_exercise(request: ExerciseRequestCreate, db: Session = Depends(get_db)):
     employee = db.query(Employee).filter(Employee.employee_id == request.employee_id).first()
     if not employee:
-        raise HTTPException(status_code=404, detail="员工不存在")
+        raise HTTPException(status_code=404, detail=f"员工不存在: {request.employee_id}")
 
     grant = GrantService.get_grant(db, request.grant_id)
     if not grant:
-        raise HTTPException(status_code=404, detail="授予记录不存在")
+        raise HTTPException(status_code=404, detail=f"授予记录不存在: {request.grant_id}")
 
     validation = ExerciseValidator.validate_exercise(
         db, grant, request.shares_to_exercise, employee
     )
 
-    shares_decimal = float(request.shares_to_exercise)
-    gross_profit = shares_decimal * (float(validation["current_price"]) - float(validation["exercise_price"]))
-    tax_result = TaxCalculator.calculate_tax(max(0, gross_profit))
-    total_cost = shares_decimal * float(validation["exercise_price"]) + float(tax_result["tax_amount"])
+    from decimal import Decimal
+    shares_decimal = Decimal(request.shares_to_exercise)
+    current_price = validation["current_price"]
+    exercise_price = validation["exercise_price"]
+    price_diff = current_price - exercise_price
+    gross_profit = shares_decimal * max(Decimal("0"), price_diff)
+    tax_result = TaxCalculator.calculate_tax(gross_profit)
+    exercise_cost = shares_decimal * exercise_price
+    tax_amount = tax_result["tax_amount"]
+    total_cost = exercise_cost + tax_amount
+    net_profit = gross_profit - total_cost
 
     return APIResponse(data={
         "is_valid": validation["is_valid"],
         "errors": validation["errors"],
         "warnings": validation["warnings"],
         "exercisable_shares": validation["exercisable_shares"],
-        "current_price": float(validation["current_price"]),
-        "exercise_price": float(validation["exercise_price"]),
-        "price_diff": float(validation["price_diff"]),
-        "estimated_gross_profit": max(0, gross_profit),
-        "estimated_tax": float(tax_result["tax_amount"]),
+        "shares_to_exercise": request.shares_to_exercise,
+        "current_price": float(current_price),
+        "exercise_price": float(exercise_price),
+        "price_diff": float(price_diff),
+        "gross_profit": float(gross_profit),
         "tax_deferred_amount": float(tax_result["deferred_amount"]),
-        "estimated_exercise_cost": shares_decimal * float(validation["exercise_price"]),
-        "estimated_total_deduction": total_cost,
-        "estimated_net_profit": max(0, gross_profit) - total_cost,
+        "taxable_amount": float(tax_result["actual_taxable"]),
+        "tax_rate": float(tax_result["tax_rate"]),
+        "tax_amount": float(tax_amount),
+        "exercise_cost": float(exercise_cost),
+        "total_deduction": float(total_cost),
+        "net_profit": float(net_profit),
+        "currency": "CNY",
     })
 
 
@@ -65,7 +76,7 @@ def create_exercise_request(request: ExerciseRequestCreate, db: Session = Depend
         )
         return APIResponse(
             data=ExerciseRequestSchema.model_validate(exercise).model_dump(),
-            message="行权申请已提交",
+            message=f"行权申请已提交: {exercise.request_id}, 股数{exercise.shares_to_exercise}, 税款¥{float(exercise.tax_amount):.2f}, 总扣款¥{float(exercise.deduction_amount):.2f}",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -76,30 +87,54 @@ def create_exercise_request(request: ExerciseRequestCreate, db: Session = Depend
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("", response_model=PaginatedResponse)
+def list_exercises(
+    employee_id: str = Query(None),
+    status: str = Query(None),
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    query = db.query(ExerciseRequest)
+    if employee_id:
+        query = query.filter(ExerciseRequest.employee_id == employee_id)
+    if status:
+        try:
+            from database.models import ExerciseStatus
+            query = query.filter(ExerciseRequest.status == ExerciseStatus(status))
+        except Exception:
+            pass
+    total = query.count()
+    exercises = query.order_by(ExerciseRequest.created_at.desc()).offset(skip).limit(limit).all()
+    return PaginatedResponse(
+        data=[ExerciseRequestSchema.model_validate(e).model_dump() for e in exercises],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
+
+
 @router.get("/{request_id}", response_model=APIResponse)
 def get_exercise_request(request_id: str, db: Session = Depends(get_db)):
-    from database.models import ExerciseRequest
     exercise = db.query(ExerciseRequest).filter(ExerciseRequest.request_id == request_id).first()
     if not exercise:
-        raise HTTPException(status_code=404, detail="行权申请不存在")
+        raise HTTPException(status_code=404, detail=f"行权申请不存在: {request_id}")
     return APIResponse(data=ExerciseRequestSchema.model_validate(exercise).model_dump())
 
 
 @router.post("/{request_id}/approve", response_model=APIResponse)
 def approve_exercise(
     request_id: str,
-    approver_id: str = "admin",
-    approver_name: str = "管理员",
+    approver_id: str = Query("admin", description="审批人ID"),
+    approver_name: str = Query("管理员", description="审批人姓名"),
     db: Session = Depends(get_db),
 ):
     try:
-        exercise = ExerciseService.approve_exercise(
-            db, request_id, approver_id, approver_name
-        )
-        ExerciseService.complete_exercise(db, request_id)
+        ExerciseService.approve_exercise(db, request_id, approver_id, approver_name)
+        exercise = ExerciseService.complete_exercise(db, request_id)
         return APIResponse(
             data=ExerciseRequestSchema.model_validate(exercise).model_dump(),
-            message="行权审批通过并完成处理",
+            message=f"行权审批通过并完成: {exercise.shares_to_exercise}股, 扣款¥{float(exercise.deduction_amount):.2f}",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -111,9 +146,9 @@ def approve_exercise(
 @router.post("/{request_id}/reject", response_model=APIResponse)
 def reject_exercise(
     request_id: str,
-    reason: str,
-    rejector_id: str = "admin",
-    rejector_name: str = "管理员",
+    reason: str = Query(..., description="驳回原因"),
+    rejector_id: str = Query("admin", description="驳回人ID"),
+    rejector_name: str = Query("管理员", description="驳回人姓名"),
     db: Session = Depends(get_db),
 ):
     try:
@@ -122,7 +157,7 @@ def reject_exercise(
         )
         return APIResponse(
             data=ExerciseRequestSchema.model_validate(exercise).model_dump(),
-            message="行权申请已驳回",
+            message=f"行权申请已驳回: {reason}",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -130,9 +165,12 @@ def reject_exercise(
 
 @router.post("/bulk-complete", response_model=APIResponse)
 def bulk_complete_exercises(request_ids: List[str], db: Session = Depends(get_db)):
-    from tasks import bulk_exercise_task
-    task = bulk_exercise_task.delay(request_ids)
-    return APIResponse(
-        data={"task_id": task.id, "request_count": len(request_ids)},
-        message="批量行权任务已提交后台处理",
-    )
+    try:
+        result = ExerciseService.bulk_process_exercises(db, request_ids)
+        return APIResponse(
+            data=result,
+            message=f"批量行权处理完成: 成功{len(result.get('success', []))}个, 失败{len(result.get('failed', []))}个",
+        )
+    except Exception as e:
+        logger.error(f"批量行权失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

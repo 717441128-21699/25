@@ -1,100 +1,172 @@
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from datetime import date as date_type
 from typing import Optional
-from pathlib import Path
+from io import BytesIO
 
 from database import get_db
-from services import MonthlyReportService
-from schemas import MonthlyReportSchema, APIResponse, PaginatedResponse
+from database.models import MonthlyReport
+from services import ReportService
+from schemas import (
+    MonthlyReportSchema, APIResponse, PaginatedResponse,
+)
 from utils.logger import get_logger
-from tasks import generate_monthly_report_task
 
-router = APIRouter(prefix="/api/v1/reports", tags=["报告管理"])
-logger = get_logger("api_report")
+router = APIRouter(prefix="/api/v1/reports", tags=["报告中心"])
+logger = get_logger("api_reports")
 
 
 @router.post("/generate", response_model=APIResponse)
-def generate_report(
-    report_month: Optional[str] = None,
-    async_mode: bool = True,
+@router.post("", response_model=APIResponse)
+def generate_monthly_report(
+    report_date: Optional[str] = Query(None, description="报告月份 YYYY-MM"),
     db: Session = Depends(get_db),
 ):
     try:
-        if async_mode:
-            task = generate_monthly_report_task.delay(report_month)
-            return APIResponse(
-                data={"task_id": task.id, "report_month": report_month},
-                message="报告生成任务已提交后台处理",
-            )
+        from datetime import datetime
+        if report_date:
+            try:
+                parsed = datetime.strptime(report_date, "%Y-%m").date()
+            except ValueError:
+                parsed = date_type.today().replace(day=1)
         else:
-            report = MonthlyReportService.generate_monthly_report(db, report_month)
-            return APIResponse(
-                data=MonthlyReportSchema.model_validate(report).model_dump(),
-                message="月度报告已生成",
-            )
+            parsed = date_type.today().replace(day=1)
+
+        report = ReportService.generate_monthly_report(db, parsed.year, parsed.month)
+        return APIResponse(
+            data=MonthlyReportSchema.model_validate(report).model_dump(),
+            message=f"月度报告生成成功: {report.year}年{report.month}月",
+        )
     except Exception as e:
-        logger.error(f"生成报告失败: {e}", exc_info=True)
+        logger.error(f"生成月度报告失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("", response_model=PaginatedResponse)
 def list_reports(
+    year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None),
     skip: int = 0,
-    limit: int = 24,
+    limit: int = 100,
     db: Session = Depends(get_db),
 ):
-    reports = MonthlyReportService.list_reports(db, skip, limit)
+    query = db.query(MonthlyReport)
+    if year:
+        query = query.filter(MonthlyReport.year == year)
+    if month:
+        query = query.filter(MonthlyReport.month == month)
+    total = query.count()
+    reports = query.order_by(MonthlyReport.year.desc(), MonthlyReport.month.desc()).offset(skip).limit(limit).all()
     return PaginatedResponse(
         data=[MonthlyReportSchema.model_validate(r).model_dump() for r in reports],
-        total=len(reports),
+        total=total,
         skip=skip,
         limit=limit,
     )
 
 
-@router.get("/{report_month}", response_model=APIResponse)
-def get_report(report_month: str, db: Session = Depends(get_db)):
-    report = MonthlyReportService.get_report(db, report_month)
+@router.get("/{report_id}", response_model=APIResponse)
+def get_report(report_id: int, db: Session = Depends(get_db)):
+    report = db.query(MonthlyReport).filter(MonthlyReport.id == report_id).first()
     if not report:
-        raise HTTPException(status_code=404, detail="报告不存在")
+        raise HTTPException(status_code=404, detail=f"报告不存在: {report_id}")
     data = MonthlyReportSchema.model_validate(report).model_dump()
-    if report.summary_data:
-        data["summary"] = report.summary_data
-    if report.chart_data:
-        data["charts"] = report.chart_data
+    try:
+        import json
+        if report.summary_data:
+            data["summary"] = json.loads(report.summary_data) if isinstance(report.summary_data, str) else report.summary_data
+    except Exception:
+        pass
     return APIResponse(data=data)
 
 
-@router.get("/{report_month}/download/pdf")
-def download_report_pdf(report_month: str, db: Session = Depends(get_db)):
-    report = MonthlyReportService.get_report(db, report_month)
-    if not report or not report.pdf_path:
-        raise HTTPException(status_code=404, detail="PDF报告不存在")
+@router.get("/{report_id}/pdf")
+def download_report_pdf(report_id: int, db: Session = Depends(get_db)):
+    report = db.query(MonthlyReport).filter(MonthlyReport.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail=f"报告不存在: {report_id}")
 
-    pdf_path = Path(report.pdf_path)
-    if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail="PDF文件不存在")
+    try:
+        pdf_bytes = ReportService.export_pdf(db, report)
+        buffer = BytesIO(pdf_bytes)
+        filename = f"monthly_report_{report.year}_{report.month:02d}.pdf"
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        logger.warning(f"PDF导出失败，降级为文本: {e}")
+        try:
+            import json
+            summary = json.loads(report.summary_data) if isinstance(report.summary_data, str) else {}
+        except Exception:
+            summary = {"raw": str(report.summary_data)}
+        lines = [
+            f"股权激励月度报告",
+            f"报告期间: {report.year}年{report.month}月",
+            f"生成时间: {report.created_at}",
+            "",
+            "=== 核心指标 ===",
+        ]
+        if isinstance(summary, dict):
+            for k, v in summary.items():
+                if isinstance(v, (dict, list)):
+                    try:
+                        lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")
+                    except Exception:
+                        lines.append(f"{k}: {v}")
+                else:
+                    lines.append(f"{k}: {v}")
+        text = "\n".join(lines)
+        buffer = BytesIO(text.encode("utf-8"))
+        return StreamingResponse(
+            buffer,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="monthly_report_{report.year}_{report.month:02d}.txt"'},
+        )
 
-    return FileResponse(
-        path=pdf_path,
-        filename=f"EquityReport_{report_month}.pdf",
-        media_type="application/pdf",
-    )
+
+@router.get("/{report_id}/excel")
+def download_report_excel(report_id: int, db: Session = Depends(get_db)):
+    report = db.query(MonthlyReport).filter(MonthlyReport.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail=f"报告不存在: {report_id}")
+
+    try:
+        excel_bytes = ReportService.export_excel(db, report)
+        buffer = BytesIO(excel_bytes)
+        filename = f"monthly_report_{report.year}_{report.month:02d}.xlsx"
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        logger.warning(f"Excel导出失败，降级为CSV: {e}")
+        try:
+            import json, csv
+            summary = json.loads(report.summary_data) if isinstance(report.summary_data, str) else {}
+            output = BytesIO()
+            writer = csv.writer(output)
+            writer.writerow(["指标", "值"])
+            if isinstance(summary, dict):
+                for k, v in summary.items():
+                    writer.writerow([k, str(v)])
+            output.seek(0)
+            return StreamingResponse(
+                output,
+                media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition": f'attachment; filename="monthly_report_{report.year}_{report.month:02d}.csv"'},
+            )
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail=f"Excel导出失败: {e}, {e2}")
 
 
-@router.get("/{report_month}/download/excel")
-def download_report_excel(report_month: str, db: Session = Depends(get_db)):
-    report = MonthlyReportService.get_report(db, report_month)
-    if not report or not report.excel_path:
-        raise HTTPException(status_code=404, detail="Excel报告不存在")
-
-    excel_path = Path(report.excel_path)
-    if not excel_path.exists():
-        raise HTTPException(status_code=404, detail="Excel文件不存在")
-
-    return FileResponse(
-        path=excel_path,
-        filename=f"EquityReport_{report_month}.xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+@router.get("/current/summary", response_model=APIResponse)
+def get_current_summary(db: Session = Depends(get_db)):
+    from datetime import date
+    today = date.today()
+    report = ReportService.generate_monthly_report(db, today.year, today.month)
+    return APIResponse(data=MonthlyReportSchema.model_validate(report).model_dump())
